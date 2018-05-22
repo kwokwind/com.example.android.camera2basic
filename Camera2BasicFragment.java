@@ -55,6 +55,7 @@ import android.util.Log;
 import android.util.LongSparseArray;
 import android.util.Size;
 import android.util.SparseIntArray;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.Surface;
 import android.view.TextureView;
@@ -323,7 +324,8 @@ public class Camera2BasicFragment extends Fragment
 
                             mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
                                     mBackgroundHandler);
-                        } catch (CameraAccessException e) {
+                        } catch (CameraAccessException | IllegalStateException e) {
+                            YUVImg.close();
                             e.printStackTrace();
                         }
                     } else {
@@ -356,7 +358,8 @@ public class Camera2BasicFragment extends Fragment
                             mImageWriter.queueInputImage(YUVImg);
                             mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
                                     mBackgroundHandler);
-                        } catch (CameraAccessException e) {
+                        } catch (CameraAccessException | IllegalStateException e) {
+                            YUVImg.close();
                             e.printStackTrace();
                         }
                     }
@@ -530,7 +533,9 @@ public class Camera2BasicFragment extends Fragment
             activity.runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    Toast.makeText(activity, text, Toast.LENGTH_SHORT).show();
+                    Toast toast = Toast.makeText(activity, text, Toast.LENGTH_SHORT);
+                    toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL, 0, 0);
+                    toast.show();
                 }
             });
         }
@@ -1025,8 +1030,7 @@ public class Camera2BasicFragment extends Fragment
                 public void onCaptureCompleted(@NonNull CameraCaptureSession session,
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
-                    showToast("Saved to " +
-                            getActivity().getExternalFilesDir(null).toString());
+                    showToast("Saved to " + getActivity().getExternalFilesDir(null).toString());
 
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     if (timestamp == null) {
