@@ -264,13 +264,18 @@ public class Camera2BasicFragment extends Fragment
 
         @Override
         public void onImageAvailable(ImageReader reader) {
-            Image img = reader.acquireNextImage();
+            try {
+                Image img = reader.acquireNextImage();
 
-            if (img == null) {
-                Log.e(TAG, "mImageReader onImageAvailable: null jpg!");
-                return;
+                if (img == null) {
+                    Log.e(TAG, "mImageReader onImageAvailable: null jpg!");
+                    return;
+                }
+                mBackgroundHandler.post(new ImageSaver(img, mFile, getActivity()));
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "cannot get more Image for mOnImageAvailableListener");
+                e.printStackTrace();
             }
-            mBackgroundHandler.post(new ImageSaver(img, mFile, getActivity()));
         }
 
     };
@@ -281,77 +286,84 @@ public class Camera2BasicFragment extends Fragment
         @Override
         public void onImageAvailable(ImageReader reader) {
             // start a reprocess capture here
-            Image YUVImg = reader.acquireNextImage();
-            if (YUVImg != null) {
-                Long timestamp = YUVImg.getTimestamp();
+            try {
+                Image YUVImg = reader.acquireNextImage();
+                if (YUVImg != null) {
+                    Long timestamp = YUVImg.getTimestamp();
 
-                ReprocContextHolder holder = mReprocHolderList.get(timestamp);
-                if (holder == null) {
-                    holder = new ReprocContextHolder();
-                    mReprocHolderList.put(timestamp, holder);
-                }
-
-                if (!holder.mHad1stReproce) {
-                    Log.d(TAG, "onYUVImageAvailable normal ts=" + timestamp
-                            + ", state=" + holder.mFrameState + ", start 1st stage reproc...");
-                    try {
-                        TotalCaptureResult result = holder.mLastCaptureResult;
-
-                        if (result == null) {
-                            Log.e(TAG, "1st stage reproc null result!");
-                            return;
-                        }
-
-                        CaptureRequest.Builder captureRequestBuilder =
-                                mCameraDevice.createReprocessCaptureRequest(result);
-                        captureRequestBuilder.removeTarget(mImageReader.getSurface());
-                        captureRequestBuilder.addTarget(mYUVImageReader.getSurface());
-
-                        captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
-                                CaptureRequest.EDGE_MODE_HIGH_QUALITY);
-                        captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
-                                CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
-                        mImageWriter.queueInputImage(YUVImg);
-                        holder.mHad1stReproce = true;
-
-                        mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
-                                mBackgroundHandler);
-                    } catch (CameraAccessException e) {
-                        e.printStackTrace();
+                    ReprocContextHolder holder = mReprocHolderList.get(timestamp);
+                    if (holder == null) {
+                        holder = new ReprocContextHolder();
+                        mReprocHolderList.put(timestamp, holder);
                     }
-                } else {
-                    Log.d(TAG, "onYUVImageAvailable reproc ts=" + timestamp
-                            + ", state=" + holder.mFrameState + ", start 2nd stage reproc...");
 
-                    try {
-                        TotalCaptureResult result = holder.mLastCaptureResult;
+                    if (!holder.mHad1stReproce) {
+                        Log.d(TAG, "onYUVImageAvailable normal ts=" + timestamp
+                                + ", state=" + holder.mFrameState + ", start 1st stage reproc...");
+                        try {
+                            TotalCaptureResult result = holder.mLastCaptureResult;
 
-                        if (result == null) {
-                            Log.e(TAG, "2nd stage reproc null result!");
-                            return;
+                            if (result == null) {
+                                Log.e(TAG, "1st stage reproc null result!");
+                                YUVImg.close();
+                                return;
+                            }
+
+                            CaptureRequest.Builder captureRequestBuilder =
+                                    mCameraDevice.createReprocessCaptureRequest(result);
+                            captureRequestBuilder.removeTarget(mImageReader.getSurface());
+                            captureRequestBuilder.addTarget(mYUVImageReader.getSurface());
+
+                            captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
+                                    CaptureRequest.EDGE_MODE_HIGH_QUALITY);
+                            captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
+                                    CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
+                            mImageWriter.queueInputImage(YUVImg);
+                            holder.mHad1stReproce = true;
+
+                            mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
+                                    mBackgroundHandler);
+                        } catch (CameraAccessException e) {
+                            e.printStackTrace();
                         }
+                    } else {
+                        Log.d(TAG, "onYUVImageAvailable reproc ts=" + timestamp
+                                + ", state=" + holder.mFrameState + ", start 2nd stage reproc...");
 
-                        CaptureRequest.Builder captureRequestBuilder =
-                                mCameraDevice.createReprocessCaptureRequest(result);
-                        captureRequestBuilder.removeTarget(mYUVImageReader.getSurface());
-                        captureRequestBuilder.addTarget(mImageReader.getSurface());
+                        try {
+                            TotalCaptureResult result = holder.mLastCaptureResult;
 
-                        // Orientation
-                        int rotation =
-                                getActivity().getWindowManager().getDefaultDisplay().getRotation();
-                        captureRequestBuilder.set(CaptureRequest.JPEG_ORIENTATION,
-                                getOrientation(rotation));
-                        captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
-                                CaptureRequest.EDGE_MODE_OFF);
-                        captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
-                                CaptureRequest.NOISE_REDUCTION_MODE_OFF);
-                        mImageWriter.queueInputImage(YUVImg);
-                        mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
-                                mBackgroundHandler);
-                    } catch (CameraAccessException e) {
-                        e.printStackTrace();
+                            if (result == null) {
+                                Log.e(TAG, "2nd stage reproc null result!");
+                                YUVImg.close();
+                                return;
+                            }
+
+                            CaptureRequest.Builder captureRequestBuilder =
+                                    mCameraDevice.createReprocessCaptureRequest(result);
+                            captureRequestBuilder.removeTarget(mYUVImageReader.getSurface());
+                            captureRequestBuilder.addTarget(mImageReader.getSurface());
+
+                            // Orientation
+                            int rotation =
+                                    getActivity().getWindowManager().getDefaultDisplay().getRotation();
+                            captureRequestBuilder.set(CaptureRequest.JPEG_ORIENTATION,
+                                    getOrientation(rotation));
+                            captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
+                                    CaptureRequest.EDGE_MODE_OFF);
+                            captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
+                                    CaptureRequest.NOISE_REDUCTION_MODE_OFF);
+                            mImageWriter.queueInputImage(YUVImg);
+                            mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
+                                    mBackgroundHandler);
+                        } catch (CameraAccessException e) {
+                            e.printStackTrace();
+                        }
                     }
                 }
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "cannot get more Image for mOnYUVImageAvailableListener");
+                e.printStackTrace();
             }
         }
     };
@@ -541,7 +553,7 @@ public class Camera2BasicFragment extends Fragment
      * @return The optimal {@code Size}, or an arbitrary one if none were big enough
      */
     private static Size chooseOptimalSize(Size[] choices, int textureViewWidth,
-            int textureViewHeight, int maxWidth, int maxHeight, Size aspectRatio) {
+                                          int textureViewHeight, int maxWidth, int maxHeight, Size aspectRatio) {
 
         // Collect the supported resolutions that are at least as big as the preview Surface
         List<Size> bigEnough = new ArrayList<>();
@@ -553,7 +565,7 @@ public class Camera2BasicFragment extends Fragment
             if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight &&
                     option.getHeight() == option.getWidth() * h / w) {
                 if (option.getWidth() >= textureViewWidth &&
-                    option.getHeight() >= textureViewHeight) {
+                        option.getHeight() >= textureViewHeight) {
                     bigEnough.add(option);
                 } else {
                     notBigEnough.add(option);
@@ -672,12 +684,12 @@ public class Camera2BasicFragment extends Fragment
                         Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)),
                         new CompareSizesByArea());
                 mImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
-                        ImageFormat.JPEG, /*maxImages*/MAX_IMAGE_CNT);
+                        ImageFormat.JPEG, /*maxImages*/MAX_IMAGE_CNT*CONCURRENT_NUM);
                 mImageReader.setOnImageAvailableListener(
                         mOnImageAvailableListener, mBackgroundHandler);
 
                 mYUVImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
-                        ImageFormat.YUV_420_888, /*maxImages*/MAX_IMAGE_CNT);
+                        ImageFormat.YUV_420_888, /*maxImages*/MAX_IMAGE_CNT*CONCURRENT_NUM);
                 mYUVImageReader.setOnImageAvailableListener(
                         mOnYUVImageAvailableListener, mBackgroundHandler);
 
