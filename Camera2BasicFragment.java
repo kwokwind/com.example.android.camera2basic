@@ -122,6 +122,7 @@ public class Camera2BasicFragment extends Fragment
     private static final int STATE_PICTURE_TAKEN = 4;
 
     private static final int STATE_WAITING_REPROC = 5;
+    private static final int STATE_WAITING_JPEG_REPROC = 6;
 
     /**
      * Max preview width that is guaranteed by Camera2 API
@@ -134,7 +135,7 @@ public class Camera2BasicFragment extends Fragment
     private static final int MAX_PREVIEW_HEIGHT = 1080;
 
     private static int mPicCount = 0;
-    private static final int CONCURRENT_NUM = 1;
+    private static final int CONCURRENT_NUM = 2;
     private static final int MAX_IMAGE_CNT = 2;
     /**
      * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a
@@ -238,8 +239,16 @@ public class Camera2BasicFragment extends Fragment
     private ImageReader mImageReader;
     private ImageReader mYUVImageReader;
     private ImageWriter mImageWriter;
-    private TotalCaptureResult mLastCaptureResult;
-    private LongSparseArray<Boolean> mReprocList = new LongSparseArray<>(MAX_IMAGE_CNT);
+
+    private class ReprocContextHolder {
+        Boolean mHad1stReproce = false;
+        Boolean mIsJPGDone = false;
+        TotalCaptureResult mLastCaptureResult = null;
+        Integer mFrameState = STATE_PICTURE_TAKEN;
+    }
+
+    private LongSparseArray<ReprocContextHolder> mReprocHolderList =
+            new LongSparseArray<>(MAX_IMAGE_CNT);
 
     /**
      * This is the output file for our picture.
@@ -255,7 +264,13 @@ public class Camera2BasicFragment extends Fragment
 
         @Override
         public void onImageAvailable(ImageReader reader) {
-            mBackgroundHandler.post(new ImageSaver(reader.acquireNextImage(), mFile));
+            Image img = reader.acquireNextImage();
+
+            if (img == null) {
+                Log.e(TAG, "mImageReader onImageAvailable: null jpg!");
+                return;
+            }
+            mBackgroundHandler.post(new ImageSaver(img, mFile, getActivity()));
         }
 
     };
@@ -270,15 +285,54 @@ public class Camera2BasicFragment extends Fragment
             if (YUVImg != null) {
                 Long timestamp = YUVImg.getTimestamp();
 
-                Boolean isReproc = (mReprocList.get(timestamp) != null);
+                ReprocContextHolder holder = mReprocHolderList.get(timestamp);
+                if (holder == null) {
+                    holder = new ReprocContextHolder();
+                    mReprocHolderList.put(timestamp, holder);
+                }
 
-                if (isReproc) {
-                    Log.d(TAG, "onYUVImageAvailable reproc ts=" + timestamp
-                            + ", start 2nd stage reproc...");
-                    mReprocList.remove(timestamp);
+                if (!holder.mHad1stReproce) {
+                    Log.d(TAG, "onYUVImageAvailable normal ts=" + timestamp
+                            + ", state=" + holder.mFrameState + ", start 1st stage reproc...");
                     try {
+                        TotalCaptureResult result = holder.mLastCaptureResult;
+
+                        if (result == null) {
+                            Log.e(TAG, "1st stage reproc null result!");
+                            return;
+                        }
+
                         CaptureRequest.Builder captureRequestBuilder =
-                                mCameraDevice.createReprocessCaptureRequest(mLastCaptureResult);
+                                mCameraDevice.createReprocessCaptureRequest(result);
+                        captureRequestBuilder.removeTarget(mImageReader.getSurface());
+                        captureRequestBuilder.addTarget(mYUVImageReader.getSurface());
+
+                        captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
+                                CaptureRequest.EDGE_MODE_HIGH_QUALITY);
+                        captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
+                                CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
+                        mImageWriter.queueInputImage(YUVImg);
+                        holder.mHad1stReproce = true;
+
+                        mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
+                                mBackgroundHandler);
+                    } catch (CameraAccessException e) {
+                        e.printStackTrace();
+                    }
+                } else {
+                    Log.d(TAG, "onYUVImageAvailable reproc ts=" + timestamp
+                            + ", state=" + holder.mFrameState + ", start 2nd stage reproc...");
+
+                    try {
+                        TotalCaptureResult result = holder.mLastCaptureResult;
+
+                        if (result == null) {
+                            Log.e(TAG, "2nd stage reproc null result!");
+                            return;
+                        }
+
+                        CaptureRequest.Builder captureRequestBuilder =
+                                mCameraDevice.createReprocessCaptureRequest(result);
                         captureRequestBuilder.removeTarget(mYUVImageReader.getSurface());
                         captureRequestBuilder.addTarget(mImageReader.getSurface());
 
@@ -292,29 +346,7 @@ public class Camera2BasicFragment extends Fragment
                         captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
                                 CaptureRequest.NOISE_REDUCTION_MODE_OFF);
                         mImageWriter.queueInputImage(YUVImg);
-                        mState = STATE_WAITING_REPROC;
-                        mCaptureSession.capture(captureRequestBuilder.build(), mCaptureCallback,
-                                mBackgroundHandler);
-                    } catch (CameraAccessException e) {
-                        e.printStackTrace();
-                    }
-                } else {
-                    Log.d(TAG, "onYUVImageAvailable normal ts=" + timestamp
-                            + ", start 1st stage reproc...");
-                    try {
-                        CaptureRequest.Builder captureRequestBuilder =
-                                mCameraDevice.createReprocessCaptureRequest(mLastCaptureResult);
-                        captureRequestBuilder.removeTarget(mImageReader.getSurface());
-                        captureRequestBuilder.addTarget(mYUVImageReader.getSurface());
-
-                        captureRequestBuilder.set(CaptureRequest.EDGE_MODE,
-                                CaptureRequest.EDGE_MODE_HIGH_QUALITY);
-                        captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE,
-                                CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
-                        mImageWriter.queueInputImage(YUVImg);
-                        mState = STATE_WAITING_REPROC;
-                        mReprocList.put(timestamp, true);
-                        mCaptureSession.capture(captureRequestBuilder.build(), mCaptureCallback,
+                        mCaptureSession.capture(captureRequestBuilder.build(), mYUVCaptureCallback,
                                 mBackgroundHandler);
                     } catch (CameraAccessException e) {
                         e.printStackTrace();
@@ -371,6 +403,7 @@ public class Camera2BasicFragment extends Fragment
                 case STATE_WAITING_LOCK: {
                     Integer afState = result.get(CaptureResult.CONTROL_AF_STATE);
                     if (afState == null) {
+                        mState = STATE_PICTURE_TAKEN;
                         captureStillPicture();
                     } else if (CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED == afState ||
                             CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED == afState) {
@@ -405,11 +438,6 @@ public class Camera2BasicFragment extends Fragment
                     }
                     break;
                 }
-                case STATE_WAITING_REPROC: {
-                    Log.d(TAG, "get reproc result ts=" +
-                            result.get(CaptureResult.SENSOR_TIMESTAMP));
-                    break;
-                }
             }
         }
 
@@ -425,6 +453,56 @@ public class Camera2BasicFragment extends Fragment
                                        @NonNull CaptureRequest request,
                                        @NonNull TotalCaptureResult result) {
             process(result);
+        }
+
+    };
+
+    private CameraCaptureSession.CaptureCallback mYUVCaptureCallback
+            = new CameraCaptureSession.CaptureCallback() {
+
+        private void processFrameState(CaptureResult result) {
+            Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
+            if (timestamp == null) {
+                Log.e(TAG, "timestamp is null!");
+                return;
+            }
+
+            ReprocContextHolder holder = mReprocHolderList.get(timestamp);
+            if (holder == null) {
+                holder = new ReprocContextHolder();
+                mReprocHolderList.put(timestamp, holder);
+            }
+
+
+            switch (holder.mFrameState) {
+                case STATE_WAITING_REPROC: {
+                    Log.d(TAG, "onCaptureCompleted: reproc result ts=" + timestamp);
+                    holder.mFrameState = STATE_WAITING_JPEG_REPROC;
+                    break;
+                }
+                case STATE_WAITING_JPEG_REPROC: {
+                    Log.d(TAG, "onCaptureCompleted: jpeg reproc result ts=" + timestamp);
+                    break;
+                }
+            }
+        }
+
+        @Override
+        public void onCaptureCompleted(@NonNull CameraCaptureSession session,
+                                       @NonNull CaptureRequest request,
+                                       @NonNull TotalCaptureResult result) {
+            Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
+            Log.d(TAG, "mYUVCaptureCallback onCaptureCompleted: ts=" + timestamp);
+            if (timestamp == null) return;
+
+            ReprocContextHolder holder = mReprocHolderList.get(timestamp);
+            if (holder == null) {
+                holder = new ReprocContextHolder();
+                mReprocHolderList.put(timestamp, holder);
+            }
+
+            holder.mLastCaptureResult = result;
+            processFrameState(result);
         }
 
     };
@@ -515,7 +593,7 @@ public class Camera2BasicFragment extends Fragment
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
-        mFile = new File(getActivity().getExternalFilesDir(null), "pic.jpg");
+        mFile = new File(getActivity().getExternalFilesDir(null), "pic*.jpg");
     }
 
     @Override
@@ -822,7 +900,7 @@ public class Camera2BasicFragment extends Fragment
                         @Override
                         public void onConfigureFailed(
                                 @NonNull CameraCaptureSession cameraCaptureSession) {
-                            showToast("Failed");
+                            showToast("createReprocessableCaptureSession Failed");
                         }
                     }, null
             );
@@ -926,6 +1004,7 @@ public class Camera2BasicFragment extends Fragment
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                     CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
             setAutoFlash(captureBuilder);
+            mReprocHolderList.clear();
 
             CameraCaptureSession.CaptureCallback CaptureCallback
                     = new CameraCaptureSession.CaptureCallback() {
@@ -934,19 +1013,33 @@ public class Camera2BasicFragment extends Fragment
                 public void onCaptureCompleted(@NonNull CameraCaptureSession session,
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
-                    showToast("Saved: " + mFile);
-                    Log.d(TAG, mFile.toString());
+                    showToast("Saved to " +
+                            getActivity().getExternalFilesDir(null).toString());
+
+                    Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
+                    if (timestamp == null) {
+                        Log.e(TAG, "timestamp is null!");
+                        return;
+                    }
+
+                    ReprocContextHolder holder = mReprocHolderList.get(timestamp);
+                    if (holder == null) {
+                        holder = new ReprocContextHolder();
+                        mReprocHolderList.put(timestamp, holder);
+                    }
+                    holder.mLastCaptureResult = result;
+                    holder.mFrameState = STATE_WAITING_REPROC;
+
                     unlockFocus();
-                    mLastCaptureResult = result;
                 }
             };
 
             mCaptureSession.stopRepeating();
             mCaptureSession.abortCaptures();
+
             for (int i=0; i<CONCURRENT_NUM; ++i) {
                 mCaptureSession.capture(captureBuilder.build(), CaptureCallback, null);
             }
-            mState = STATE_WAITING_REPROC;
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -1028,23 +1121,30 @@ public class Camera2BasicFragment extends Fragment
          */
         private final File mFile;
 
-        ImageSaver(Image image, File file) {
+        private Activity mActivity;
+
+        ImageSaver(Image image, File file, Activity activity) {
             mImage = image;
             mFile = file;
+            mActivity = activity;
         }
 
         @Override
         public void run() {
-            Log.d(TAG, "got jpg image " + mPicCount + ", ts=" + mImage.getTimestamp());
             mPicCount++;
+            File dst = new File(mActivity.getExternalFilesDir(null),
+                    "pic"+mPicCount+".jpg");
             mPicCount %= CONCURRENT_NUM;
+
+            Log.d(TAG, "jpg image ts=" + mImage.getTimestamp() + " will be saved to "
+                    + dst.toString());
 
             ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
             byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
             FileOutputStream output = null;
             try {
-                output = new FileOutputStream(mFile);
+                output = new FileOutputStream(dst);
                 output.write(bytes);
             } catch (IOException e) {
                 e.printStackTrace();
